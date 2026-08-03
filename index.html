@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Frogman</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #111;
+      font-family: -apple-system, "Malgun Gothic", sans-serif;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    #hud {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      color: #fff;
+      z-index: 10;
+      background: rgba(0, 0, 0, 0.45);
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-size: 13px;
+      line-height: 1.6;
+      pointer-events: none;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    }
+
+    #hud b {
+      color: #ffd54a;
+    }
+
+    #hud-status {
+      margin-top: 8px;
+      font-weight: bold;
+      color: #7ee787;
+    }
+
+    #crosshair {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      width: 10px;
+      height: 10px;
+      margin: -5px 0 0 -5px;
+      border: 2px solid rgba(255, 255, 255, 0.85);
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 10;
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+    }
+
+    #lockHint {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.55);
+      color: #fff;
+      font-size: 22px;
+      z-index: 20;
+      cursor: pointer;
+      text-align: center;
+    }
+
+    #lockHint span {
+      background: rgba(0, 0, 0, 0.4);
+      padding: 20px 30px;
+      border-radius: 12px;
+    }
+
+    @keyframes blink {
+      50% {
+        opacity: 0.35;
+        transform: scale(0.96);
+      }
+    }
+
+    @keyframes fadeBlink {
+      50% {
+        opacity: 0.35;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="hud">
+    <div><b>W A S D</b> 이동 / <b>마우스</b> 시야 회전</div>
+    <div><b>Space</b> 혓바닥 발사 · 누르고 있으면 감기(매달림) · 떼면 해제</div>
+    <div><b>Q / E</b> 혓바닥이 박혀있을 때 앵커 기준 좌우 회전</div>
+    <div id="hud-status">지면</div>
+  </div>
+  <div id="crosshair"></div>
+  <div id="lockHint"><span>클릭해서 시작 (마우스 잠금)</span></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script>
+    (function () {
+      // ---------- 기본 씬 설정 ----------
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0xb9dcf2);
+      scene.fog = new THREE.Fog(0xb9dcf2, 90, 520);
+
+      const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 2000);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.shadowMap.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x445544, 1.0);
+      scene.add(hemi);
+      const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+      sun.position.set(120, 180, 80);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.camera.left = -220; sun.shadow.camera.right = 220;
+      sun.shadow.camera.top = 220; sun.shadow.camera.bottom = -220;
+      sun.shadow.camera.far = 700;
+      scene.add(sun);
+
+      // ---------- 바닥 ----------
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(2400, 2400),
+        new THREE.MeshStandardMaterial({ color: 0x3d6b3d })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      const grid = new THREE.GridHelper(1200, 80, 0x2a4d2a, 0x2a4d2a);
+      grid.position.y = 0.02;
+      scene.add(grid);
+      grid.visible = false;
+
+      // ---------- 빌딩 (창문 텍스처 + 충돌 박스) ----------
+      const buildings = [];      // 레이캐스트(혓바닥 조준)용 메시 목록
+      const buildingBoxes = [];  // 충돌/지면높이 계산용 AABB 목록
+      const buildingColors = [0x8a97a8, 0x778094, 0x9aa6b8, 0x69707f, 0xb0bac8, 0x7d8fa3];
+
+      function hexToCss(hex) { return '#' + hex.toString(16).padStart(6, '0'); }
+
+      function makeSideTexture(baseColorHex, dimUnits, heightUnits) {
+        const cols = Math.max(2, Math.round(dimUnits / 2.4));
+        const rows = Math.max(3, Math.round(heightUnits / 2.8));
+        const cellPx = 24;
+        const canvas = document.createElement('canvas');
+        canvas.width = cols * cellPx;
+        canvas.height = rows * cellPx;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = baseColorHex;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const lit = Math.random() > 0.4;
+            ctx.fillStyle = lit ? 'rgba(255,230,150,0.95)' : 'rgba(15,22,34,0.9)';
+            const pad = cellPx * 0.22;
+            ctx.fillRect(c * cellPx + pad, canvas.height - (r + 1) * cellPx + pad, cellPx - 2 * pad, cellPx - 2 * pad);
+          }
+        }
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.magFilter = THREE.NearestFilter;
+        return tex;
+      }
+
+      function addBuilding(x, z, w, h, d) {
+        const baseColorHex = hexToCss(buildingColors[buildings.length % buildingColors.length]);
+        const texX = makeSideTexture(baseColorHex, d, h); // X를 바라보는 면 (깊이 x 높이)
+        const texZ = makeSideTexture(baseColorHex, w, h); // Z를 바라보는 면 (너비 x 높이)
+        const sideMatX = new THREE.MeshStandardMaterial({ map: texX });
+        const sideMatZ = new THREE.MeshStandardMaterial({ map: texZ });
+        const roofMat = new THREE.MeshStandardMaterial({ color: 0x555b66 });
+        const baseMat = new THREE.MeshStandardMaterial({ color: 0x2c2f36 });
+        // BoxGeometry 면 순서: 0:+X 1:-X 2:+Y(옥상) 3:-Y(바닥) 4:+Z 5:-Z
+        const materials = [sideMatX, sideMatX, roofMat, baseMat, sideMatZ, sideMatZ];
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), materials);
+        mesh.position.set(x, h / 2, z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        buildings.push(mesh);
+        buildingBoxes.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, maxY: h });
+        return mesh;
+      }
+
+      // 스폰 전용 넓은 빌딩 (개구리가 이 옥상 위에서 시작)
+      const SPAWN_W = 24, SPAWN_D = 24, SPAWN_H = 34;
+      addBuilding(0, 0, SPAWN_W, SPAWN_H, SPAWN_D);
+
+      // 나머지 도시 - 격자 + 랜덤 지터로 넓은 간격의 빌딩 다수 생성
+      const GRID_RANGE = 2;      // -2..2
+      const SPACING = 58;        // 빌딩 사이 간격 (예전보다 훨씬 넓음)
+      for (let gx = -GRID_RANGE; gx <= GRID_RANGE; gx++) {
+        for (let gz = -GRID_RANGE; gz <= GRID_RANGE; gz++) {
+          if (gx === 0 && gz === 0) continue; // 스폰 빌딩 자리는 비워둠
+          const jitterX = (Math.random() - 0.5) * 16;
+          const jitterZ = (Math.random() - 0.5) * 16;
+          const w = 9 + Math.random() * 7;
+          const d = 9 + Math.random() * 7;
+          const h = 18 + Math.random() * 42;
+          addBuilding(gx * SPACING + jitterX, gz * SPACING + jitterZ, w, h, d);
+        }
+      }
+
+      // Extend the city about four times farther in the initial forward (+Z) direction.
+      const CITY_X_RANGE = 4;
+      const CITY_Z_MIN = -2;
+      const CITY_Z_MAX = 14;
+      for (let gx = -CITY_X_RANGE; gx <= CITY_X_RANGE; gx++) {
+        for (let gz = 3; gz <= CITY_Z_MAX; gz++) {
+          const jitterX = (Math.random() - 0.5) * 12;
+          const jitterZ = (Math.random() - 0.5) * 12;
+          addBuilding(gx * SPACING + jitterX, gz * SPACING + jitterZ,
+            9 + Math.random() * 7, 18 + Math.random() * 42, 9 + Math.random() * 7);
+        }
+      }
+
+      // Goal: a simple brown food bowl on the initial rooftop.
+      function makeTextSprite(text, color) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+        ctx.font = 'bold 72px Malgun Gothic, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.lineWidth = 12;
+        ctx.strokeStyle = '#fff7df';
+        ctx.strokeText(text, 256, 64);
+        ctx.fillStyle = color;
+        ctx.fillText(text, 256, 64);
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true }));
+        sprite.scale.set(6, 1.5, 1);
+        return sprite;
+      }
+      function makeSignTextPlane(text, width, height) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1024;
+        canvas.height = Math.round(1024 * height / width);
+        const ctx = canvas.getContext('2d');
+        const fontSize = text.length > 150 ? 48 : (text.length > 85 ? 58 : 72);
+        ctx.font = `bold ${fontSize}px Malgun Gothic, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const maxWidth = canvas.width * 0.86;
+        const lines = [];
+        let line = '';
+        for (const char of text) {
+          if (char === '\n') {
+            if (line) lines.push(line);
+            line = '';
+            continue;
+          }
+          const next = line + char;
+          if (ctx.measureText(next).width > maxWidth && line) {
+            lines.push(line);
+            line = char;
+          } else {
+            line = next;
+          }
+        }
+        if (line) lines.push(line);
+        const lineHeight = fontSize * 1.42;
+        let y = canvas.height / 2 - (lines.length - 1) * lineHeight / 2;
+        ctx.lineWidth = 10;
+        ctx.strokeStyle = '#6b3517';
+        ctx.fillStyle = '#fff7df';
+        for (const lineText of lines) {
+          ctx.strokeText(lineText, canvas.width / 2, y);
+          ctx.fillText(lineText, canvas.width / 2, y);
+          y += lineHeight;
+        }
+        const material = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, side: THREE.DoubleSide });
+        return new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+      }
+      const foodBowl = new THREE.Group();
+      const bowlOuter = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 1.65, 1.25, 24), new THREE.MeshStandardMaterial({ color: 0x8a4d20, roughness: 0.72 }));
+      bowlOuter.position.y = 0.62;
+      const bowlInside = new THREE.Mesh(new THREE.CylinderGeometry(1.92, 1.92, 0.12, 24), new THREE.MeshStandardMaterial({ color: 0x4d2813 }));
+      bowlInside.position.y = 1.25;
+      const bowlLabel = makeTextSprite('양호밥', '#6b3517');
+      bowlLabel.position.set(0, 3.0, 0);
+      foodBowl.add(bowlOuter, bowlInside, bowlLabel);
+      foodBowl.position.set(0, SPAWN_H, -6);
+      foodBowl.traverse(o => { if (o.isMesh) o.castShadow = true; });
+      scene.add(foodBowl);
+
+      // Five oversized flies circle above randomly chosen rooftops.
+      const flies = [];
+      const flyBodyMat = new THREE.MeshStandardMaterial({ color: 0x101010, roughness: 0.35, metalness: 0.15 });
+      const flyWingMat = new THREE.MeshStandardMaterial({ color: 0xcdeeff, transparent: true, opacity: 0.48, side: THREE.DoubleSide, roughness: 0.2 });
+      function addFly(box, phase) {
+        const fly = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.SphereGeometry(0.62, 12, 10), flyBodyMat);
+        body.scale.set(0.85, 1.1, 0.85);
+        const wingLeft = new THREE.Mesh(new THREE.PlaneGeometry(1.55, 0.65), flyWingMat);
+        const wingRight = wingLeft.clone();
+        wingLeft.position.set(-0.8, 0.25, 0);
+        wingRight.position.set(0.8, 0.25, 0);
+        wingLeft.rotation.x = wingRight.rotation.x = -Math.PI / 2;
+        fly.add(body, wingLeft, wingRight);
+        fly.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        scene.add(fly);
+        flies.push({ fly, wingLeft, wingRight, center: new THREE.Vector3((box.minX + box.maxX) / 2, box.maxY + 3.3, (box.minZ + box.maxZ) / 2), phase });
+      }
+      const flyBuildingIndices = new Set();
+      while (flyBuildingIndices.size < 5 && flyBuildingIndices.size < buildingBoxes.length - 1) {
+        flyBuildingIndices.add(1 + Math.floor(Math.random() * (buildingBoxes.length - 1)));
+      }
+      for (const index of flyBuildingIndices) addFly(buildingBoxes[index], Math.random() * Math.PI * 2);
+      function updateFlies(dt) {
+        for (const state of flies) {
+          if (state.carried || state.delivered) continue;
+          state.phase += dt * 1.35;
+          state.fly.position.set(
+            state.center.x + Math.cos(state.phase) * 3.2,
+            state.center.y + Math.sin(state.phase * 2.2) * 0.45,
+            state.center.z + Math.sin(state.phase) * 3.2
+          );
+          state.fly.rotation.y = -state.phase;
+          state.wingLeft.rotation.z = Math.sin(state.phase * 18) * 0.55;
+          state.wingRight.rotation.z = -Math.sin(state.phase * 18) * 0.55;
+        }
+      }
+
+      const cityCenterZ = ((CITY_Z_MIN + CITY_Z_MAX) * SPACING) / 2;
+      const cityDepth = (CITY_Z_MAX - CITY_Z_MIN + 2) * SPACING;
+      const roadMat = new THREE.MeshStandardMaterial({ color: 0x25282d, roughness: 0.92 });
+      const roadMarkMat = new THREE.MeshStandardMaterial({ color: 0xf1d36a, emissive: 0x3a3008 });
+      function addRoad(x, z, w, d) {
+        const road = new THREE.Mesh(new THREE.PlaneGeometry(w, d), roadMat);
+        road.rotation.x = -Math.PI / 2;
+        road.position.set(x, 0.035, z);
+        road.receiveShadow = true;
+        scene.add(road);
+      }
+      function addRoadMarks(x, z, length, vertical) {
+        for (let i = -length / 2 + 7; i < length / 2; i += 12) {
+          const mark = new THREE.Mesh(new THREE.PlaneGeometry(vertical ? 0.45 : 5, vertical ? 5 : 0.45), roadMarkMat);
+          mark.rotation.x = -Math.PI / 2;
+          mark.position.set(vertical ? x : x + i, 0.05, vertical ? z + i : z);
+          scene.add(mark);
+        }
+      }
+      for (let gx = -CITY_X_RANGE; gx < CITY_X_RANGE; gx++) {
+        const x = (gx + 0.5) * SPACING;
+        addRoad(x, cityCenterZ, 13, cityDepth);
+        addRoadMarks(x, cityCenterZ, cityDepth, true);
+      }
+      for (let gz = CITY_Z_MIN; gz < CITY_Z_MAX; gz++) {
+        const z = (gz + 0.5) * SPACING;
+        addRoad(0, z, (CITY_X_RANGE * 2 + 1) * SPACING, 13);
+        addRoadMarks(0, z, (CITY_X_RANGE * 2 + 1) * SPACING, false);
+      }
+
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6c4528 });
+      const leafMat = new THREE.MeshStandardMaterial({ color: 0x245d35, roughness: 0.8 });
+      function addTree(x, z) {
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, 2.6, 8), trunkMat);
+        trunk.position.set(x, 1.3, z);
+        const crown = new THREE.Mesh(new THREE.SphereGeometry(1.45, 10, 8), leafMat);
+        crown.position.set(x, 3.4, z);
+        trunk.castShadow = crown.castShadow = true;
+        scene.add(trunk, crown);
+      }
+      for (let gz = CITY_Z_MIN; gz <= CITY_Z_MAX; gz++) {
+        const z = gz * SPACING + 19;
+        addTree(-CITY_X_RANGE * SPACING - 12, z);
+        addTree(CITY_X_RANGE * SPACING + 12, z);
+      }
+
+      // Trees on inner sidewalks make each block read as a city street, not bare grass.
+      for (let gx = -CITY_X_RANGE; gx < CITY_X_RANGE; gx++) {
+        const roadX = (gx + 0.5) * SPACING;
+        for (let gz = CITY_Z_MIN; gz <= CITY_Z_MAX; gz++) {
+          const blockZ = gz * SPACING;
+          addTree(roadX - 9, blockZ + 15);
+          addTree(roadX + 9, blockZ - 15);
+        }
+      }
+
+      const poleMat = new THREE.MeshStandardMaterial({ color: 0x30343a, metalness: 0.65, roughness: 0.42 });
+      const lampMat = new THREE.MeshStandardMaterial({ color: 0xffefaf, emissive: 0x8a6a18, emissiveIntensity: 0.8 });
+      function addStreetLamp(x, z) {
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.14, 6, 8), poleMat);
+        pole.position.set(x, 3, z);
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.09, 0.09), poleMat);
+        arm.position.set(x + 0.38, 5.8, z);
+        const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.18, 0.32), lampMat);
+        lamp.position.set(x + 0.76, 5.68, z);
+        pole.castShadow = arm.castShadow = true;
+        scene.add(pole, arm, lamp);
+      }
+      for (let gx = -CITY_X_RANGE; gx < CITY_X_RANGE; gx++) {
+        const roadX = (gx + 0.5) * SPACING;
+        for (let gz = CITY_Z_MIN; gz <= CITY_Z_MAX; gz += 2) {
+          addStreetLamp(roadX - 8.2, gz * SPACING + 12);
+          addStreetLamp(roadX + 8.2, gz * SPACING - 12);
+        }
+      }
+
+      const cars = [];
+      const carMaterials = [0xd94343, 0x3b75c3, 0xe0b434, 0xf3f3ee];
+      function addCar(axis, lane, start, speed, color) {
+        const car = new THREE.Group();
+        const body = new THREE.Mesh(new THREE.BoxGeometry(axis === 'z' ? 2.2 : 4.2, 0.75, axis === 'z' ? 4.2 : 2.2), new THREE.MeshStandardMaterial({ color }));
+        body.position.y = 0.55;
+        const cabin = new THREE.Mesh(new THREE.BoxGeometry(axis === 'z' ? 1.7 : 2.1, 0.65, axis === 'z' ? 1.9 : 1.5), new THREE.MeshStandardMaterial({ color: 0x91b5cd, metalness: 0.2, roughness: 0.25 }));
+        cabin.position.y = 1.15;
+        car.add(body, cabin);
+        car.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        scene.add(car);
+        cars.push({ car, axis, lane, progress: start, speed });
+      }
+      for (let i = 0; i < 32; i++) {
+        const xRoad = ((i % 8) - 3.5) * SPACING;
+        addCar('z', xRoad + (i % 2 ? 3 : -3), (i * 71) % cityDepth, 8 + (i % 4) * 1.5, carMaterials[i % carMaterials.length]);
+      }
+      for (let i = 0; i < 18; i++) {
+        const zRoad = (CITY_Z_MIN + 0.5 + (i % (CITY_Z_MAX - CITY_Z_MIN))) * SPACING;
+        addCar('x', zRoad + (i % 2 ? 3 : -3), (i * 83) % ((CITY_X_RANGE * 2 + 1) * SPACING), 7 + (i % 3) * 2, carMaterials[(i + 1) % carMaterials.length]);
+      }
+      function startKnockout(message, impulse) {
+        if (carHit) return;
+        if (carriedFly) dropCarriedFly();
+        carHit = true;
+        carHitTimer = 0;
+        releaseHook();
+        velocity.copy(impulse);
+        hitOverlay.textContent = message;
+        hitOverlay.style.opacity = '1';
+      }
+      function triggerCarHit(state) {
+        hp = Math.max(0, hp - MAX_HP);
+        flashDamage();
+        startKnockout('You Died', new THREE.Vector3(
+          state.axis === 'x' ? state.speed * 1.45 : 0,
+          7,
+          state.axis === 'z' ? state.speed * 1.45 : 0
+        ));
+      }
+      function applyFallDamage(impactSpeed) {
+        const damage = Math.max(0, Math.ceil((impactSpeed - 14) * (4 / 3)));
+        if (damage === 0 || carHit) return;
+        hp = Math.max(0, hp - damage);
+        flashDamage();
+        if (hp === 0) {
+          const tumble = new THREE.Vector3(velocity.x * 0.35, 5, velocity.z * 0.35);
+          startKnockout('You Died', tumble);
+        }
+      }
+      function updateCars(dt) {
+        const zStart = (CITY_Z_MIN - 0.5) * SPACING;
+        const xSpan = (CITY_X_RANGE * 2 + 1) * SPACING;
+        for (const state of cars) {
+          state.progress += state.speed * dt;
+          const span = state.axis === 'z' ? cityDepth : xSpan;
+          if (state.progress > span) state.progress -= span;
+          if (state.axis === 'z') {
+            state.car.position.set(state.lane, 0, zStart + state.progress);
+            state.car.rotation.y = 0;
+          } else {
+            state.car.position.set(-xSpan / 2 + state.progress, 0, state.lane);
+            state.car.rotation.y = 0;
+          }
+          const dx = character.position.x - state.car.position.x;
+          const dz = character.position.z - state.car.position.z;
+          if (!carHit && character.position.y < 2.6 && dx * dx + dz * dz < 7.5) triggerCarHit(state);
+        }
+      }
+
+      function groundHeightAt(x, z) {
+        let h = 0;
+        for (const b of buildingBoxes) {
+          if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && b.maxY > h) h = b.maxY;
+        }
+        return h;
+      }
+
+      const CHAR_RADIUS = 0.5;
+      function resolveBuildingCollisions(pos) {
+        for (const b of buildingBoxes) {
+          // Eject completely from an interior wall crossing before evaluating ground height.
+          if (pos.y < b.maxY - 0.15 && pos.x > b.minX && pos.x < b.maxX && pos.z > b.minZ && pos.z < b.maxZ) {
+            // Descending from above the roof is a landing, not a wall collision.
+            if (velocity.y <= 0 && pos.y > b.maxY - 2.5) {
+              pos.y = b.maxY;
+              velocity.y = 0;
+              continue;
+            }
+            const toMinX = pos.x - b.minX, toMaxX = b.maxX - pos.x;
+            const toMinZ = pos.z - b.minZ, toMaxZ = b.maxZ - pos.z;
+            const nearest = Math.min(toMinX, toMaxX, toMinZ, toMaxZ);
+            if (nearest === toMinX) pos.x = b.minX - CHAR_RADIUS;
+            else if (nearest === toMaxX) pos.x = b.maxX + CHAR_RADIUS;
+            else if (nearest === toMinZ) pos.z = b.minZ - CHAR_RADIUS;
+            else pos.z = b.maxZ + CHAR_RADIUS;
+            continue;
+          }
+          if (pos.y >= b.maxY - 0.15) continue; // 옥상 위/높이라면 벽 충돌 무시 (걸어다닐 수 있게)
+          const cx = Math.max(b.minX, Math.min(pos.x, b.maxX));
+          const cz = Math.max(b.minZ, Math.min(pos.z, b.maxZ));
+          const dx = pos.x - cx, dz = pos.z - cz;
+          const distSq = dx * dx + dz * dz;
+          if (distSq < CHAR_RADIUS * CHAR_RADIUS) {
+            const dist = Math.sqrt(distSq);
+            if (dist < 0.0001) { pos.x += CHAR_RADIUS; continue; }
+            const push = CHAR_RADIUS - dist;
+            pos.x += (dx / dist) * push;
+            pos.z += (dz / dist) * push;
+          }
+        }
+      }
+
+      // ---------- 캐릭터 (Peepo GLTF 모델) - 스폰 빌딩 옥상 위에서 시작 ----------
+      const MODEL_FRONT_OFFSET = 0; // 모델이 반대로 걷는 것처럼 보이면 0으로 조정
+      const character = new THREE.Group();
+      character.position.set(0, SPAWN_H, 0);
+      scene.add(character);
+
+      const modelPivot = new THREE.Group(); // 혓바닥 방향으로 몸을 기울이는 용도
+      character.add(modelPivot);
+
+      let mixer = null;
+      let walkAction = null;
+
+      const gltfLoader = new THREE.GLTFLoader();
+      gltfLoader.load(
+        'peepo_rigged_cartoon_character.glb',
+        (gltf) => {
+          const model = gltf.scene;
+          model.scale.setScalar(0.9);
+          model.rotation.y = MODEL_FRONT_OFFSET;
+          model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+          modelPivot.add(model);
+
+          mixer = new THREE.AnimationMixer(model);
+          const clip = gltf.animations.find(c => c.name === 'Walking') || gltf.animations[0];
+          if (clip) {
+            walkAction = mixer.clipAction(clip);
+            walkAction.play();
+            walkAction.paused = true;
+          }
+        },
+        undefined,
+        (err) => { console.error('GLB 로드 실패:', err); }
+      );
+
+      // ---------- 개구리 혓바닥 (그래플) ----------
+      const TONGUE_COLOR = 0xff3d94;
+      const tongueMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.14, 0.09, 1, 8, 1, true),
+        new THREE.MeshStandardMaterial({ color: TONGUE_COLOR, roughness: 0.45, side: THREE.DoubleSide })
+      );
+      tongueMesh.visible = false;
+      scene.add(tongueMesh);
+
+      const tongueTipMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.22, 12, 12),
+        new THREE.MeshStandardMaterial({ color: 0xff6fb0, roughness: 0.3, emissive: 0x330018 })
+      );
+      tongueTipMesh.visible = false;
+      scene.add(tongueTipMesh);
+
+      function updateTongueMesh(from, to) {
+        const dir = new THREE.Vector3().subVectors(to, from);
+        const len = dir.length();
+        if (len < 0.01) { tongueMesh.visible = false; return; }
+        tongueMesh.visible = true;
+        tongueMesh.position.copy(from).add(dir.clone().multiplyScalar(0.5));
+        tongueMesh.scale.set(1, len, 1);
+        tongueMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+        tongueTipMesh.visible = true;
+        tongueTipMesh.position.copy(to);
+      }
+
+      function hideTongue() {
+        tongueMesh.visible = false;
+        tongueTipMesh.visible = false;
+      }
+
+      // The character origin is at its feet; this aligns the tongue with its mouth.
+      const MOUTH_HEIGHT = 1.85;
+      function mouthPosition() {
+        return character.position.clone().add(new THREE.Vector3(0, MOUTH_HEIGHT, 0));
+      }
+
+      // ---------- 입력 상태 ----------
+      const input = { w: false, a: false, s: false, d: false, shift: false };
+      let yaw = 0, pitch = -0.12;
+      let hooked = false;
+      let firing = false;
+      let fireCanHook = false;
+      let grounded = true;
+      const anchor = new THREE.Vector3();
+      const fireTarget = new THREE.Vector3();
+      const tongueTip = new THREE.Vector3();
+      let ropeLength = 0;
+      let tongueDown = false;
+      let reelDown = false;
+      let jumpCharging = false;
+      let jumpCharge = 0;
+      let carHitTimer = 0;
+      let carHit = false;
+      const carHitVelocity = new THREE.Vector3();
+      const spawnPosition = new THREE.Vector3(0, SPAWN_H, 0);
+      const MAX_HP = 100;
+      let hp = MAX_HP;
+      let carriedFly = null;
+      let fliesDelivered = 0;
+      let toastTimer = 0;
+      const velocity = new THREE.Vector3();
+
+      const GRAVITY = 28;
+      const WALK_SPEED = 9;
+      const RUN_MULTIPLIER = 1.8;
+      const WALK_ACCEL = 10;
+      const AIR_CONTROL = 24;
+      const SWING_ACCEL = 30;
+      const MAX_HOOK_DIST = 150;
+      const MAX_SWING_SPEED = 45;
+      const CAM_DIST = 8;
+      const CAM_HEIGHT_OFFSET = 1.2;
+      const REEL_SPEED = 16;
+      const MIN_ROPE_LENGTH = 1.5;
+      const JUMP_BASE_SPEED = 9;
+      const JUMP_EXTRA_SPEED = 18;
+      const JUMP_CHARGE_TIME = 1.1;
+      const TONGUE_SPEED = 140; // 혓바닥이 날아가는 속도
+
+      const crosshair = document.getElementById('crosshair');
+      function flashCrosshair(hit) {
+        crosshair.style.borderColor = hit ? '#7ee787' : '#ff5c5c';
+        clearTimeout(flashCrosshair._t);
+        flashCrosshair._t = setTimeout(() => { crosshair.style.borderColor = 'rgba(255,255,255,0.85)'; }, 180);
+      }
+
+      // ---------- 포인터 락 (마우스 시야) ----------
+      const lockHint = document.getElementById('lockHint');
+      const hitOverlay = document.createElement('div');
+      hitOverlay.textContent = '언제나 차조심';
+      hitOverlay.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);color:#fff;font-size:42px;font-weight:bold;text-shadow:0 3px 12px #000;opacity:0;pointer-events:none;z-index:30;transition:opacity .35s ease';
+      document.body.appendChild(hitOverlay);
+      const goalToast = document.createElement('div');
+      goalToast.style.cssText = 'position:fixed;top:23%;left:50%;transform:translateX(-50%) scale(.8);padding:12px 25px;background:#fff5c8;border:4px solid #6b3517;border-radius:18px;color:#6b3517;font:900 30px "Malgun Gothic",sans-serif;box-shadow:0 6px 0 #263238;opacity:0;pointer-events:none;z-index:25;transition:opacity .2s,transform .2s';
+      document.body.appendChild(goalToast);
+      const goalArrow = document.createElement('div');
+      goalArrow.innerHTML = '<div style="font-size:58px;line-height:.7;transform-origin:center">↑</div><div style="margin-top:15px;white-space:nowrap">양호 밥그릇 방향</div>';
+      goalArrow.style.cssText = 'display:none;position:fixed;top:70px;left:50%;color:#ffec75;font:900 17px "Malgun Gothic",sans-serif;text-align:center;text-shadow:2px 2px 0 #263238;pointer-events:none;z-index:15';
+      document.body.appendChild(goalArrow);
+      const damageVignette = document.createElement('div');
+      damageVignette.style.cssText = 'position:fixed;inset:0;box-shadow:inset 0 0 55px 18px rgba(255,35,35,.92);opacity:0;pointer-events:none;z-index:29;transition:opacity .12s ease';
+      document.body.appendChild(damageVignette);
+      let damageFlashTimeout;
+      function flashDamage() {
+        damageVignette.style.opacity = '1';
+        clearTimeout(damageFlashTimeout);
+        damageFlashTimeout = setTimeout(() => { damageVignette.style.opacity = '0'; }, 320);
+      }
+
+      const lobby = document.createElement('div');
+      lobby.style.cssText = 'position:fixed;inset:0;background:#18242d url("frogmanposter.png") center/cover no-repeat;z-index:100;overflow:hidden';
+      const makePlayButton = () => {
+        const button = document.createElement('button');
+        button.textContent = 'CLICK TO START';
+        button.style.cssText = 'position:absolute;padding:14px 28px;border:0;background:transparent;color:#fff;font:900 30px sans-serif;letter-spacing:3px;text-shadow:0 3px 12px #000;cursor:pointer;animation:fadeBlink 1.6s ease-in-out infinite';
+        return button;
+      };
+      const playBottom = makePlayButton();
+      playBottom.style.cssText += 'left:50%;top:50%;transform:translate(-50%,-50%)';
+      lobby.append(playBottom);
+      document.body.appendChild(lobby);
+
+      const cards = document.createElement('div');
+      cards.style.cssText = 'display:none;position:fixed;inset:0;z-index:101;background:linear-gradient(135deg,#91d7ff,#fff3c4);align-items:center;justify-content:center;overflow:hidden;cursor:grab';
+      const card = document.createElement('div');
+      card.style.cssText = 'width:min(760px,82vw);height:min(620px,76vh);padding:38px;box-sizing:border-box;background:#fffdf2;border:7px solid #6b3517;border-radius:28px;box-shadow:0 12px 0 #263238;transition:transform .22s ease;user-select:none';
+      cards.appendChild(card);
+      const skipCards = document.createElement('button');
+      skipCards.textContent = '건너뛰기';
+      skipCards.style.cssText = 'position:absolute;right:28px;bottom:24px;padding:10px 18px;border:2px solid #fff;border-radius:10px;background:rgba(38,50,56,.82);color:#fff;font:700 15px "Malgun Gothic",sans-serif;cursor:pointer';
+      cards.appendChild(skipCards);
+      document.body.appendChild(cards);
+      const cardPages = [
+        `<h1 style="margin:0 0 16px;color:#6b3517;font-size:34px">개구리맨의 임무</h1><p style="font:700 20px/1.55 'Malgun Gothic',sans-serif;color:#263238">5곳의 랜덤한 빌딩 옥상에서 <b>맛있는 파리</b>를 모아, 배고픈 양호에게 밥을 주세요!</p><div style="display:flex;gap:28px;align-items:center;justify-content:center;margin-top:18px"><img src="fly.png" style="width:180px;height:180px;object-fit:contain"><span style="font-size:42px">→</span><img src="yhbab.png" style="width:180px;height:180px;object-fit:contain"></div><p style="margin-top:16px;font:700 18px 'Malgun Gothic',sans-serif;color:#d23d72">파리는 한 번에 한 마리만 옮길 수 있어요.</p><p style="font:600 14px sans-serif;color:#6b7280">좌우로 마우스를 끌어 다음 페이지로 넘기세요.</p>`,
+        '', '', '', ''
+      ];
+      cardPages[1] = `<h1 style="margin:0 0 20px;color:#6b3517;font-size:34px">기본 조작</h1><table style="width:100%;border-collapse:separate;border-spacing:0 9px;font:700 18px 'Malgun Gothic',sans-serif"><tr><th style="width:34%;padding:12px;border-radius:12px 0 0 12px;background:#8ed1f0;color:#263238">W A S D</th><td style="padding:12px;border-radius:0 12px 12px 0;background:#e9f8ff">이동</td></tr><tr><th style="padding:12px;border-radius:12px 0 0 12px;background:#8ed1f0;color:#263238">마우스</th><td style="padding:12px;border-radius:0 12px 12px 0;background:#e9f8ff">카메라 시점 회전</td></tr><tr><th style="padding:12px;border-radius:12px 0 0 12px;background:#8ed1f0;color:#263238">Shift</th><td style="padding:12px;border-radius:0 12px 12px 0;background:#e9f8ff">달리기</td></tr><tr><th style="padding:12px;border-radius:12px 0 0 12px;background:#8ed1f0;color:#263238">Space 홀드</th><td style="padding:12px;border-radius:0 12px 12px 0;background:#e9f8ff">충전 점프 · 오래 누를수록 더 높이 점프</td></tr></table>`;
+      cardPages[2] = `<h1 style="margin:0 0 14px;color:#6b3517;font-size:34px">개구리맨의 혓바닥</h1><p style="margin:0;font:700 18px/1.5 'Malgun Gothic',sans-serif;color:#263238">진격의 거인의 입체기동장치, 스파이더맨의 웹스윙처럼 건물에 혀를 붙여 도시를 가로지르세요!</p><div style="display:flex;gap:25px;align-items:center;justify-content:center;margin:14px 0"><img src="toung.png" style="width:230px;height:190px;object-fit:contain"><table style="border-collapse:separate;border-spacing:0 8px;font:700 16px 'Malgun Gothic',sans-serif"><tr><th style="padding:10px;background:#ff9aba;border-radius:10px 0 0 10px">좌클릭 홀드</th><td style="padding:10px;background:#fff0f5;border-radius:0 10px 10px 0">혀 발사 · 유지 · 감기</td></tr><tr><th style="padding:10px;background:#ff9aba;border-radius:10px 0 0 10px">우클릭 홀드</th><td style="padding:10px;background:#fff0f5;border-radius:0 10px 10px 0">빠르게 감기</td></tr><tr><th style="padding:10px;background:#ff9aba;border-radius:10px 0 0 10px">좌클릭 놓기</th><td style="padding:10px;background:#fff0f5;border-radius:0 10px 10px 0">혀 해제 · 진행 방향으로 활공</td></tr></table></div>`;
+      cardPages[3] = `<h1 style="margin:0 0 14px;color:#6b3517;font-size:34px">개구리맨의 게이지</h1><div style="display:flex;gap:24px;align-items:center"><img src="3bars.png" style="width:260px;height:230px;object-fit:contain"><div style="font:700 17px/1.65 'Malgun Gothic',sans-serif;color:#263238"><b style="color:#ff3d94">혀 길이</b> · 혀의 최대 사거리와 현재 길이<br><b style="color:#ef5350">HP</b> · 0이 되면 기절합니다<br><b style="color:#7ee787">점프 충전</b> · Space 홀드로 충전합니다</div></div><div style="display:flex;gap:20px;justify-content:center;margin-top:12px"><div style="text-align:center"><img src="fall.png" style="width:150px;height:105px;object-fit:contain"><div style="font:700 14px 'Malgun Gothic',sans-serif">높은 곳에서 떨어지면 HP 감소!</div></div><div style="text-align:center"><img src="car.png" style="width:150px;height:105px;object-fit:contain"><div style="font:700 14px 'Malgun Gothic',sans-serif;color:#d23d72">자동차를 조심하세요!</div></div></div>`;
+      cardPages[4] = `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center"><h1 style="margin:0 0 22px;color:#6b3517;font-size:40px">양호의 비밀</h1><p style="max-width:540px;font:700 24px/1.65 'Malgun Gothic',sans-serif;color:#263238">파리를 많이 모을수록 양호의 엄청난 비밀들이 공개됩니다.</p><p style="margin-top:45px;font:600 15px 'Malgun Gothic',sans-serif;color:#6b7280">왼쪽으로 드래그하여 게임 시작</p></div>`;
+      let cardIndex = 0;
+      let cardDragStart = null;
+      function renderCard() {
+        card.innerHTML = cardPages[cardIndex];
+      }
+      function showCards() {
+        lobby.style.display = 'none';
+        cards.style.display = 'flex';
+        cardIndex = 0;
+        renderCard();
+      }
+      function beginGame() {
+        cards.style.display = 'none';
+        lobby.style.display = 'none';
+        lockHint.style.display = 'flex';
+      }
+      playBottom.addEventListener('click', showCards);
+      skipCards.addEventListener('click', beginGame);
+      cards.addEventListener('pointerdown', (e) => { cardDragStart = e.clientX; cards.setPointerCapture(e.pointerId); });
+      cards.addEventListener('pointerup', (e) => {
+        if (cardDragStart == null) return;
+        const delta = e.clientX - cardDragStart;
+        if (Math.abs(delta) > 65) {
+          if (delta < 0 && cardIndex === cardPages.length - 1) beginGame();
+          else {
+            cardIndex = Math.max(0, Math.min(cardPages.length - 1, cardIndex + (delta < 0 ? 1 : -1)));
+            renderCard();
+          }
+        }
+        cardDragStart = null;
+      });
+      const hud = document.getElementById('hud');
+      hud.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;font:700 16px "Malgun Gothic",sans-serif;text-shadow:2px 2px 0 #263238;pointer-events:none';
+      hud.innerHTML = '<div>ESC를 눌러 설명 보기</div><div id="hud-status" style="display:none"></div>';
+      lockHint.innerHTML = '<div style="background:rgba(18,32,38,.9);border:4px solid #fff;border-radius:22px;padding:25px 38px;box-shadow:0 7px 0 #263238;text-align:center;line-height:1.9"><b style="font-size:25px">조작 방법</b><br>마우스: 시점 회전 · 좌클릭 홀드: 혀 발사/감기<br>우클릭 홀드: 빠르게 감기 · Space 홀드: 차지 점프<br>W A S D: 이동 · Shift: 달리기<br><span style="display:inline-block;margin-top:12px;color:#ffd54a;font-size:20px;animation:blink 1.2s ease-in-out infinite">클릭하여 게임 시작!</span></div>';
+      renderer.domElement.addEventListener('click', () => renderer.domElement.requestPointerLock());
+      lockHint.addEventListener('click', () => renderer.domElement.requestPointerLock());
+      document.addEventListener('pointerlockchange', () => {
+        lockHint.style.display = (document.pointerLockElement === renderer.domElement) ? 'none' : 'flex';
+      });
+      document.addEventListener('mousemove', (e) => {
+        if (document.pointerLockElement !== renderer.domElement) return;
+        yaw -= e.movementX * 0.0022;
+        pitch -= e.movementY * 0.0022;
+        pitch = Math.max(-1.2, Math.min(1.0, pitch));
+      });
+
+      window.addEventListener('keydown', (e) => {
+        switch (e.code) {
+          case 'KeyW': input.w = true; break;
+          case 'KeyA': input.a = true; break;
+          case 'KeyS': input.s = true; break;
+          case 'KeyD': input.d = true; break;
+          case 'ShiftLeft':
+          case 'ShiftRight': input.shift = true; break;
+          case 'Space':
+            e.preventDefault();
+            if (grounded && !hooked && !jumpCharging) jumpCharging = true;
+            break;
+        }
+      });
+      window.addEventListener('keyup', (e) => {
+        switch (e.code) {
+          case 'KeyW': input.w = false; break;
+          case 'KeyA': input.a = false; break;
+          case 'KeyS': input.s = false; break;
+          case 'KeyD': input.d = false; break;
+          case 'ShiftLeft':
+          case 'ShiftRight': input.shift = false; break;
+          case 'Space':
+            if (jumpCharging) {
+              velocity.y = JUMP_BASE_SPEED + JUMP_EXTRA_SPEED * jumpCharge;
+              grounded = false;
+              jumpCharging = false;
+              jumpCharge = 0;
+            }
+            break;
+        }
+      });
+
+      renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+      renderer.domElement.addEventListener('mousedown', (e) => {
+        if (document.pointerLockElement !== renderer.domElement) return;
+        if (e.button === 0) {
+          e.preventDefault();
+          tongueDown = true;
+          if (!hooked && !firing) fireTongue();
+        } else if (e.button === 2) {
+          e.preventDefault();
+          reelDown = true;
+        }
+      });
+      window.addEventListener('mouseup', (e) => {
+        if (e.button === 0) {
+          tongueDown = false;
+          if (hooked) releaseHook();
+          else if (firing) { firing = false; hideTongue(); }
+        } else if (e.button === 2) {
+          reelDown = false;
+        }
+      });
+
+      const raycaster = new THREE.Raycaster();
+      const cameraRaycaster = new THREE.Raycaster();
+      const smokePuffs = [];
+      function showGoalToast(message) {
+        goalToast.textContent = message;
+        toastTimer = 1.5;
+        goalToast.style.opacity = '1';
+        goalToast.style.transform = 'translateX(-50%) scale(1)';
+      }
+      function addSmoke(position) {
+        for (let i = 0; i < 14; i++) {
+          const material = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.82 });
+          const puff = new THREE.Mesh(new THREE.SphereGeometry(0.28 + Math.random() * 0.28, 8, 8), material);
+          puff.position.copy(position).add(new THREE.Vector3((Math.random() - .5) * 2.4, 0.4 + Math.random(), (Math.random() - .5) * 2.4));
+          scene.add(puff);
+          smokePuffs.push({ puff, material, life: 0, drift: new THREE.Vector3((Math.random() - .5) * 1.5, 1.6 + Math.random() * 1.5, (Math.random() - .5) * 1.5) });
+        }
+      }
+      function addMilestoneSign(number) {
+        const signMessages = [
+          '저는 개구리가 좋아요. 특히 사막비개구리가 제일 귀엽다고 생각해요.',
+          '저는 최근 개봉한 스파이더맨 영화를 너무 재밌게 보고 거미도 하는데 개구리라고 못 할 거 없다고 생각했어요. 위대한 히어로 "개구리맨"의 탄생이었죠.',
+          '저는 이 사이트을 만들다가 인간의 나약함을 느꼈어요. 그리고 자연스레 눌러버렸죠.  "Plus 요금제 업그레이드 - 29000원"',
+          '사실 제가 아무리 개구리를 좋아해도 파리를 먹진 않아요..',
+          '안녕하세요. 저는 405호실 1팀의 경기대 25학번 인공지능 전공 이양호라고 합니다. 드디어 제대로 인사를 드리게 되네요. 여기까지 플레이 해주셔서 감사합니다! 이 메시지를 보고 계신 분들 모두 복 받으세요~~~'
+        ];
+        const message = signMessages[number - 1];
+        const last = number === 5;
+        const placements = [
+          new THREE.Vector3(-7.5, SPAWN_H, -1.5), new THREE.Vector3(7.5, SPAWN_H, -1.5),
+          new THREE.Vector3(-8.5, SPAWN_H, 5.5), new THREE.Vector3(8.5, SPAWN_H, 5.5),
+          new THREE.Vector3(0, SPAWN_H, -6)
+        ];
+        const sign = new THREE.Group();
+        const width = last ? 13.5 : 7.4;
+        const height = last ? 8.0 : 5.0;
+        const board = new THREE.Mesh(new THREE.BoxGeometry(width, height, 0.34), new THREE.MeshStandardMaterial({ color: 0x8a4d20, roughness: 0.86 }));
+        board.position.y = last ? 9.5 : 3.9;
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.17, last ? 7.6 : 4.2, 8), new THREE.MeshStandardMaterial({ color: 0x5d331d }));
+        post.position.y = last ? 3.8 : 2.1;
+        const label = makeSignTextPlane(message, width * (last ? 0.9 : 0.84), height * (last ? 0.86 : 0.8));
+        label.position.y = board.position.y;
+        label.position.z = 0.19;
+        const backLabel = label.clone();
+        backLabel.position.z = -0.19;
+        backLabel.rotation.y = Math.PI;
+        sign.add(board, post, label, backLabel);
+        sign.position.copy(placements[number - 1]);
+        sign.traverse(o => { if (o.isMesh) o.castShadow = true; });
+        scene.add(sign);
+        addSmoke(sign.position.clone().add(new THREE.Vector3(0, 0.1, 0)));
+      }
+      function collectFly(state) {
+        carriedFly = state;
+        state.carried = true;
+        character.add(state.fly);
+        state.fly.position.set(0, 3.55, 0);
+        state.fly.rotation.set(0, 0, 0);
+        state.fly.scale.setScalar(0.5);
+        showGoalToast('파리 확보!');
+      }
+      function dropCarriedFly() {
+        const state = carriedFly;
+        carriedFly = null;
+        state.carried = false;
+        scene.add(state.fly);
+        state.fly.scale.setScalar(1);
+        state.fly.position.set(
+          state.center.x + Math.cos(state.phase) * 3.2,
+          state.center.y + Math.sin(state.phase * 2.2) * 0.45,
+          state.center.z + Math.sin(state.phase) * 3.2
+        );
+        state.fly.rotation.set(0, -state.phase, 0);
+      }
+      function deliverFly() {
+        const state = carriedFly;
+        carriedFly = null;
+        state.carried = false;
+        state.delivered = true;
+        scene.add(state.fly);
+        const slot = fliesDelivered;
+        const angle = slot * Math.PI * 2 / 5;
+        state.fly.position.copy(foodBowl.position).add(new THREE.Vector3(Math.cos(angle) * 1.15, 1.7, Math.sin(angle) * 1.15));
+        state.fly.rotation.set(0, 0, 0);
+        state.fly.scale.setScalar(0.5);
+        fliesDelivered++;
+        addMilestoneSign(fliesDelivered);
+        showGoalToast(fliesDelivered === 5 ? '양호밥 완성!' : `파리 ${fliesDelivered}마리 배달!`);
+      }
+      function updateGoal(dt) {
+        if (!carHit && !carriedFly) {
+          for (const state of flies) {
+            if (!state.carried && !state.delivered && character.position.distanceTo(state.fly.position) < 3.7) {
+              collectFly(state);
+              break;
+            }
+          }
+        }
+        if (carriedFly && character.position.distanceTo(foodBowl.position) < 4.2) deliverFly();
+        goalArrow.style.display = carriedFly ? 'block' : 'none';
+        if (carriedFly) {
+          const toBowl = foodBowl.position.clone().sub(character.position);
+          const relativeAngle = Math.atan2(toBowl.x, toBowl.z) - yaw;
+          goalArrow.firstElementChild.style.transform = `rotate(${relativeAngle}rad)`;
+        }
+        toastTimer = Math.max(0, toastTimer - dt);
+        if (toastTimer === 0) {
+          goalToast.style.opacity = '0';
+          goalToast.style.transform = 'translateX(-50%) scale(.8)';
+        }
+        for (let i = smokePuffs.length - 1; i >= 0; i--) {
+          const state = smokePuffs[i];
+          state.life += dt;
+          state.puff.position.addScaledVector(state.drift, dt);
+          state.puff.scale.setScalar(1 + state.life * 1.4);
+          state.material.opacity = Math.max(0, 0.82 * (1 - state.life / 1.25));
+          if (state.life > 1.25) {
+            scene.remove(state.puff);
+            smokePuffs.splice(i, 1);
+          }
+        }
+      }
+
+      function getCamDirection() {
+        return new THREE.Vector3(
+          Math.sin(yaw) * Math.cos(pitch),
+          Math.sin(pitch),
+          Math.cos(yaw) * Math.cos(pitch)
+        ).normalize();
+      }
+
+      function releaseHook() {
+        if (hooked && !grounded) {
+          // Preserve the swing's tangent momentum and give a small lift so a release glides forward.
+          const travel = new THREE.Vector3(velocity.x, 0, velocity.z);
+          if (travel.lengthSq() < 0.05) {
+            travel.set(Math.sin(character.rotation.y), 0, Math.cos(character.rotation.y));
+          }
+          travel.normalize().multiplyScalar(10);
+          velocity.add(travel);
+          velocity.y = Math.max(velocity.y, 7);
+        }
+        hooked = false;
+        firing = false;
+        grounded = false;
+        hideTongue();
+      }
+
+      function fireTongue() {
+        const dir = getCamDirection();
+        raycaster.set(camera.position, dir);
+        raycaster.far = MAX_HOOK_DIST;
+        const hits = raycaster.intersectObjects([...buildings, ground], false);
+        if (hits.length > 0) {
+          fireTarget.copy(hits[0].point);
+          fireCanHook = true;
+          flashCrosshair(true);
+        } else {
+          // A miss is still a visible tongue shot; it simply cannot attach.
+          fireTarget.copy(camera.position).add(dir.multiplyScalar(MAX_HOOK_DIST));
+          fireCanHook = false;
+          flashCrosshair(false);
+        }
+        tongueTip.copy(mouthPosition());
+        firing = true;
+      }
+
+      function updateFiring(dt) {
+        if (!firing) return;
+        const toTarget = new THREE.Vector3().subVectors(fireTarget, tongueTip);
+        const dist = toTarget.length();
+        const step = TONGUE_SPEED * dt;
+        if (dist <= step) {
+          tongueTip.copy(fireTarget);
+          firing = false;
+          if (fireCanHook) {
+            hooked = true;
+            grounded = false;
+            anchor.copy(fireTarget);
+            ropeLength = mouthPosition().distanceTo(anchor);
+            if (ropeLength < 1) ropeLength = 1;
+          } else {
+            hideTongue();
+          }
+        } else {
+          tongueTip.add(toTarget.normalize().multiplyScalar(step));
+        }
+      }
+
+      // ---------- 이동/물리 업데이트 ----------
+      function updateMovement(dt) {
+        const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+        const right = new THREE.Vector3(Math.sin(yaw - Math.PI / 2), 0, Math.cos(yaw - Math.PI / 2));
+
+        if (carHit) {
+          carHitTimer += dt;
+          velocity.y -= GRAVITY * dt;
+          character.position.add(velocity.clone().multiplyScalar(dt));
+          velocity.x *= 0.985;
+          velocity.z *= 0.985;
+          const gh = groundHeightAt(character.position.x, character.position.z);
+          if (character.position.y <= gh) {
+            character.position.y = gh;
+            velocity.y = Math.abs(velocity.y) > 3 ? -velocity.y * 0.22 : 0;
+          }
+          modelPivot.rotation.z += 9 * dt;
+          modelPivot.rotation.x += 5 * dt;
+          if (carHitTimer >= 2) {
+            carHit = false;
+            hitOverlay.style.opacity = '0';
+            character.position.copy(spawnPosition);
+            character.rotation.set(0, 0, 0);
+            modelPivot.rotation.set(0, 0, 0);
+            velocity.set(0, 0, 0);
+            grounded = true;
+            hp = MAX_HP;
+          }
+          return;
+        }
+
+        if (hooked) {
+          velocity.y -= GRAVITY * dt;
+
+          if ((tongueDown || reelDown) && ropeLength > MIN_ROPE_LENGTH) {
+            const reelMultiplier = reelDown ? 2.6 : 1;
+            ropeLength = Math.max(MIN_ROPE_LENGTH, ropeLength - REEL_SPEED * reelMultiplier * dt);
+          }
+
+          const push = new THREE.Vector3();
+          if (input.w) push.add(forward);
+          if (input.s) push.add(forward.clone().negate());
+          if (input.d) push.add(right);
+          if (input.a) push.add(right.clone().negate());
+          if (push.lengthSq() > 0) {
+            push.normalize().multiplyScalar(SWING_ACCEL * dt);
+            velocity.add(push);
+          }
+
+          if (velocity.length() > MAX_SWING_SPEED) velocity.setLength(MAX_SWING_SPEED);
+
+          character.position.add(velocity.clone().multiplyScalar(dt));
+
+          let diff = character.position.clone().sub(anchor);
+          let dist = diff.length();
+          diff = dist > 0.0001 ? diff.divideScalar(dist) : new THREE.Vector3(0, -1, 0);
+          character.position.copy(anchor.clone().add(diff.clone().multiplyScalar(ropeLength)));
+
+          const radial = velocity.dot(diff);
+          velocity.sub(diff.clone().multiplyScalar(radial));
+
+          resolveBuildingCollisions(character.position);
+
+          const gh = groundHeightAt(character.position.x, character.position.z);
+          if (character.position.y <= gh + 0.05) {
+            applyFallDamage(Math.max(0, -velocity.y));
+            if (carHit) return;
+            character.position.y = gh;
+            velocity.y = 0;
+            grounded = true;
+          }
+
+          const flatVel = new THREE.Vector3(velocity.x, 0, velocity.z);
+          if (flatVel.lengthSq() > 0.05) {
+            character.rotation.y = Math.atan2(flatVel.x, flatVel.z);
+          }
+        } else if (!grounded) {
+          velocity.y -= GRAVITY * dt;
+          const airMove = new THREE.Vector3();
+          if (input.w) airMove.add(forward);
+          if (input.s) airMove.add(forward.clone().negate());
+          if (input.d) airMove.add(right);
+          if (input.a) airMove.add(right.clone().negate());
+          if (airMove.lengthSq() > 0) {
+            airMove.normalize().multiplyScalar(AIR_CONTROL * dt);
+            velocity.x += airMove.x;
+            velocity.z += airMove.z;
+          }
+          const maxAirSpeed = Math.max(24, WALK_SPEED * (input.shift ? RUN_MULTIPLIER : 1));
+          const airSpeed = Math.hypot(velocity.x, velocity.z);
+          if (airSpeed > maxAirSpeed) {
+            velocity.x *= maxAirSpeed / airSpeed;
+            velocity.z *= maxAirSpeed / airSpeed;
+          }
+          character.position.add(velocity.clone().multiplyScalar(dt));
+          resolveBuildingCollisions(character.position);
+          const gh = groundHeightAt(character.position.x, character.position.z);
+          if (character.position.y <= gh) {
+            applyFallDamage(Math.max(0, -velocity.y));
+            if (carHit) return;
+            character.position.y = gh;
+            velocity.set(0, 0, 0);
+            grounded = true;
+          }
+        } else {
+          const move = new THREE.Vector3();
+          if (input.w) move.add(forward);
+          if (input.s) move.add(forward.clone().negate());
+          if (input.d) move.add(right);
+          if (input.a) move.add(right.clone().negate());
+          const targetVelocity = new THREE.Vector3();
+          if (move.lengthSq() > 0) {
+            const moveSpeed = WALK_SPEED * (input.shift ? RUN_MULTIPLIER : 1);
+            targetVelocity.copy(move.normalize().multiplyScalar(moveSpeed));
+          }
+          const responsiveness = 1 - Math.exp(-WALK_ACCEL * dt);
+          velocity.x = THREE.MathUtils.lerp(velocity.x, targetVelocity.x, responsiveness);
+          velocity.z = THREE.MathUtils.lerp(velocity.z, targetVelocity.z, responsiveness);
+          character.position.x += velocity.x * dt;
+          character.position.z += velocity.z * dt;
+          if (Math.hypot(velocity.x, velocity.z) > 0.08) {
+            character.rotation.y = Math.atan2(velocity.x, velocity.z);
+          }
+          resolveBuildingCollisions(character.position);
+          const gh = groundHeightAt(character.position.x, character.position.z);
+          if (gh < character.position.y - 1.0) {
+            grounded = false; // 옥상 가장자리에서 벗어남 -> 낙하 시작
+          } else {
+            character.position.y = gh;
+          }
+        }
+
+        character.position.x = Math.max(-400, Math.min(400, character.position.x));
+        character.position.z = Math.max(-300, Math.min(1000, character.position.z));
+      }
+
+      function updateCamera() {
+        const dir = getCamDirection();
+        const target = character.position.clone().add(new THREE.Vector3(0, 1.5, 0));
+        const camPos = target.clone().sub(dir.clone().multiplyScalar(CAM_DIST));
+        camPos.y += CAM_HEIGHT_OFFSET;
+        camPos.y = Math.max(camPos.y, 1.0);
+        const cameraOffset = camPos.clone().sub(target);
+        const cameraDirection = cameraOffset.clone().normalize();
+        cameraRaycaster.set(target, cameraDirection);
+        cameraRaycaster.far = cameraOffset.length();
+        const obstruction = cameraRaycaster.intersectObjects(buildings, false).find(hit => hit.distance > 0.35);
+        if (obstruction) {
+          camera.position.copy(target).add(cameraDirection.multiplyScalar(Math.max(0.65, obstruction.distance - 0.35)));
+        } else {
+          camera.position.copy(camPos);
+        }
+        camera.lookAt(target.clone().add(dir.clone().multiplyScalar(5)));
+      }
+
+      function updateTongueVisual() {
+        if (hooked) {
+          updateTongueMesh(mouthPosition(), anchor);
+        } else if (firing) {
+          updateTongueMesh(mouthPosition(), tongueTip);
+        } else {
+          hideTongue();
+        }
+      }
+
+      // 혓바닥/앵커 방향으로 몸을 기울이는 애니메이션
+      function updateLean(dt) {
+        if (carHit) return;
+        let targetRoll = 0, targetPitch = 0;
+        if (hooked || firing) {
+          const targetPoint = hooked ? anchor : fireTarget;
+          const toTarget = targetPoint.clone().sub(character.position);
+          const flat = new THREE.Vector3(toTarget.x, 0, toTarget.z);
+          if (flat.lengthSq() > 0.0001) {
+            flat.normalize();
+            const cosY = Math.cos(-character.rotation.y), sinY = Math.sin(-character.rotation.y);
+            const localX = flat.x * cosY - flat.z * sinY;
+            const localZ = flat.x * sinY + flat.z * cosY;
+            targetRoll = THREE.MathUtils.clamp(-localX * 0.7, -0.6, 0.6);
+            targetPitch = THREE.MathUtils.clamp(localZ * 0.35, -0.3, 0.3);
+          }
+          if (hooked) {
+            const full = anchor.clone().sub(character.position).normalize();
+            targetPitch = THREE.MathUtils.clamp(targetPitch - full.y * 0.4, -0.6, 0.6);
+          }
+        }
+        modelPivot.rotation.z = THREE.MathUtils.lerp(modelPivot.rotation.z, targetRoll, 0.15);
+        modelPivot.rotation.x = THREE.MathUtils.lerp(modelPivot.rotation.x, targetPitch, 0.15);
+      }
+
+      // ---------- 메인 루프 ----------
+      const hudStatus = document.getElementById('hud-status');
+      const vitalsPanel = document.createElement('div');
+      vitalsPanel.style.cssText = 'position:fixed;left:22px;bottom:22px;width:290px;color:#fff;font:700 16px "Malgun Gothic",sans-serif;text-shadow:2px 2px 0 #263238;z-index:12;pointer-events:none';
+      const tongueLabel = document.createElement('div');
+      tongueLabel.textContent = '혀 길이';
+      const tongueGauge = document.createElement('div');
+      tongueGauge.style.cssText = 'position:relative;margin:5px 0 13px;width:100%;height:18px;background:#5b213f;border:3px solid #fff;border-radius:14px;box-shadow:0 4px 0 #263238';
+      tongueGauge.innerHTML = '<div style="position:relative;width:0;height:100%;background:#ff3d94;border-radius:10px;transition:width .05s"><span style="position:absolute;right:-10px;top:50%;width:18px;height:18px;background:#ff6fb0;border:2px solid #fff;border-radius:50%;transform:translateY(-50%);box-shadow:0 2px 0 #8a164b"></span></div>';
+      const tongueGaugeFill = tongueGauge.firstElementChild;
+      const tongueGaugeTip = tongueGaugeFill.firstElementChild;
+      const hpLabel = document.createElement('div');
+      hpLabel.textContent = 'HP 100 / 100';
+      const hpGauge = document.createElement('div');
+      hpGauge.style.cssText = 'margin:5px 0 13px;width:100%;height:20px;background:#67262b;border:3px solid #fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 0 #263238';
+      const hpGaugeFill = document.createElement('div');
+      hpGaugeFill.style.cssText = 'width:100%;height:100%;background:#ef5350;border-radius:10px;transition:width .15s';
+      hpGauge.appendChild(hpGaugeFill);
+      const jumpLabel = document.createElement('div');
+      jumpLabel.textContent = '점프 충전';
+      const jumpGauge = document.createElement('div');
+      jumpGauge.style.cssText = 'margin-top:5px;width:100%;height:18px;background:#16405d;border:3px solid #fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 0 #263238';
+      jumpGauge.innerHTML = '<div style="height:100%;width:0;background:#7ee787;border-radius:10px;transition:width .08s"></div>';
+      vitalsPanel.append(tongueLabel, tongueGauge, hpLabel, hpGauge, jumpLabel, jumpGauge);
+      document.body.appendChild(vitalsPanel);
+      const jumpGaugeFill = jumpGauge.firstElementChild;
+      let last = performance.now();
+
+      function animate() {
+        requestAnimationFrame(animate);
+        const now = performance.now();
+        const dt = Math.min((now - last) / 1000, 0.033);
+        last = now;
+
+        if (jumpCharging) jumpCharge = Math.min(1, jumpCharge + dt / JUMP_CHARGE_TIME);
+        jumpGaugeFill.style.width = `${jumpCharge * 100}%`;
+        hpGaugeFill.style.width = `${hp}%`;
+        hpLabel.textContent = `HP ${Math.ceil(hp)} / ${MAX_HP}`;
+        const tongueLength = hooked
+          ? mouthPosition().distanceTo(anchor)
+          : (firing ? mouthPosition().distanceTo(tongueTip) : 0);
+        const tonguePercent = Math.min(100, tongueLength / MAX_HOOK_DIST * 100);
+        tongueGaugeFill.style.width = `${tonguePercent}%`;
+        tongueGaugeTip.style.opacity = tonguePercent > 0 ? '1' : '0';
+
+        updateFiring(dt);
+        updateMovement(dt);
+        updateCars(dt);
+        updateFlies(dt);
+        updateGoal(dt);
+        updateCamera();
+        updateTongueVisual();
+        updateLean(dt);
+
+        if (mixer) {
+          const horizSpeed = Math.hypot(velocity.x, velocity.z);
+          const isMoving = horizSpeed > 0.12;
+          if (walkAction) {
+            walkAction.paused = carHit || !isMoving;
+            walkAction.timeScale = THREE.MathUtils.clamp(horizSpeed / WALK_SPEED, 0.35, RUN_MULTIPLIER);
+          }
+          mixer.update(dt);
+        }
+
+        if (hooked) {
+          hudStatus.textContent = `혓바닥 연결 중 (길이 ${ropeLength.toFixed(1)}m)`;
+        } else if (firing) {
+          hudStatus.textContent = '혓바닥 발사 중...';
+        } else if (!grounded) {
+          hudStatus.textContent = '낙하 중';
+        } else {
+          hudStatus.textContent = '지면';
+        }
+
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      window.addEventListener('resize', () => {
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+      });
+    })();
+  </script>
+</body>
+
+</html>
