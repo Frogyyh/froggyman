@@ -447,7 +447,7 @@
       function triggerCarHit(state) {
         hp = Math.max(0, hp - MAX_HP);
         flashDamage();
-        startKnockout('You Died', new THREE.Vector3(
+        startKnockout('WASTED', new THREE.Vector3(
           state.axis === 'x' ? state.speed * 1.45 : 0,
           7,
           state.axis === 'z' ? state.speed * 1.45 : 0
@@ -460,7 +460,7 @@
         flashDamage();
         if (hp === 0) {
           const tumble = new THREE.Vector3(velocity.x * 0.35, 5, velocity.z * 0.35);
-          startKnockout('You Died', tumble);
+          startKnockout('WASTED', tumble);
         }
       }
       function updateCars(dt) {
