@@ -635,6 +635,9 @@
       const MAX_SWING_SPEED = 45;
       const CAM_DIST = 8;
       const CAM_HEIGHT_OFFSET = 1.2;
+      const MIN_CAMERA_PITCH = -0.55;
+      const MAX_CAMERA_PITCH = 0.95;
+      const MAX_MOUSE_DELTA = 50;
       const REEL_SPEED = 16;
       const MIN_ROPE_LENGTH = 1.5;
       const JUMP_BASE_SPEED = 9;
@@ -660,7 +663,7 @@
       document.body.appendChild(goalToast);
       const goalArrow = document.createElement('div');
       goalArrow.innerHTML = '<div style="font-size:58px;line-height:.7;transform-origin:center">↑</div><div style="margin-top:15px;white-space:nowrap">양호 밥그릇 방향</div>';
-      goalArrow.style.cssText = 'display:none;position:fixed;top:70px;left:50%;color:#ffec75;font:900 17px "Malgun Gothic",sans-serif;text-align:center;text-shadow:2px 2px 0 #263238;pointer-events:none;z-index:15';
+      goalArrow.style.cssText = 'display:none;position:fixed;top:24px;right:28px;color:#ffec75;font:900 17px "Malgun Gothic",sans-serif;text-align:center;text-shadow:2px 2px 0 #263238;pointer-events:none;z-index:15';
       document.body.appendChild(goalArrow);
       const damageVignette = document.createElement('div');
       damageVignette.style.cssText = 'position:fixed;inset:0;box-shadow:inset 0 0 55px 18px rgba(255,35,35,.92);opacity:0;pointer-events:none;z-index:29;transition:opacity .12s ease';
@@ -771,9 +774,13 @@
       });
       document.addEventListener('mousemove', (e) => {
         if (document.pointerLockElement !== renderer.domElement) return;
-        yaw -= e.movementX * 0.0022;
-        pitch -= e.movementY * 0.0022;
-        pitch = Math.max(-1.2, Math.min(1.0, pitch));
+        // Pointer-lock can occasionally report one abnormally large delta.
+        // Clamp it to prevent a single bad event from snapping the view.
+        const mouseX = THREE.MathUtils.clamp(e.movementX, -MAX_MOUSE_DELTA, MAX_MOUSE_DELTA);
+        const mouseY = THREE.MathUtils.clamp(e.movementY, -MAX_MOUSE_DELTA, MAX_MOUSE_DELTA);
+        yaw -= mouseX * 0.0022;
+        pitch -= mouseY * 0.0022;
+        pitch = THREE.MathUtils.clamp(pitch, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH);
       });
 
       window.addEventListener('keydown', (e) => {
