@@ -688,6 +688,28 @@
       lobby.append(playBottom);
       document.body.appendChild(lobby);
 
+      // ---------- 시작 선택 화면 ----------
+      const startSelect = document.createElement('div');
+      startSelect.style.cssText = 'position:fixed;inset:0;display:flex;z-index:102;overflow:hidden;font-family:"Malgun Gothic",sans-serif';
+      const gameChoice = document.createElement('button');
+      gameChoice.type = 'button';
+      gameChoice.innerHTML = '<span style="font-size:clamp(42px,5vw,82px)">🐸</span><strong>개구리맨 게임하러가기</strong><small>FROGMAN GAME</small>';
+      gameChoice.style.cssText = 'width:50%;border:0;border-right:3px solid rgba(255,255,255,.75);background:linear-gradient(135deg,#4f9c58,#173d35);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;font:900 clamp(25px,3vw,48px) "Malgun Gothic",sans-serif;cursor:pointer;text-shadow:0 3px 8px rgba(0,0,0,.35);transition:filter .2s';
+      gameChoice.querySelector('small').style.cssText = 'font:700 15px sans-serif;letter-spacing:4px;opacity:.85';
+      const portfolioChoice = document.createElement('a');
+      portfolioChoice.href = 'https://frogyyh.github.io/';
+      portfolioChoice.target = '_blank';
+      portfolioChoice.rel = 'noopener noreferrer';
+      portfolioChoice.innerHTML = '<span style="font-size:clamp(42px,5vw,82px)">✦</span><strong>이양호의 포트폴리오 보러가기</strong><small>LEE YANGHO PORTFOLIO</small>';
+      portfolioChoice.style.cssText = 'width:50%;background:linear-gradient(135deg,#f7d987,#c76c55);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;font:900 clamp(25px,3vw,48px) "Malgun Gothic",sans-serif;cursor:pointer;text-decoration:none;text-align:center;text-shadow:0 3px 8px rgba(0,0,0,.3);transition:filter .2s';
+      portfolioChoice.querySelector('small').style.cssText = 'font:700 15px sans-serif;letter-spacing:3px;opacity:.85';
+      for (const choice of [gameChoice, portfolioChoice]) {
+        choice.addEventListener('mouseenter', () => { choice.style.filter = 'brightness(1.12)'; });
+        choice.addEventListener('mouseleave', () => { choice.style.filter = ''; });
+      }
+      startSelect.append(gameChoice, portfolioChoice);
+      document.body.appendChild(startSelect);
+
       const cards = document.createElement('div');
       cards.style.cssText = 'display:none;position:fixed;inset:0;z-index:101;background:linear-gradient(135deg,#91d7ff,#fff3c4);align-items:center;justify-content:center;overflow:hidden;cursor:grab';
       const card = document.createElement('div');
@@ -726,6 +748,7 @@
         showingCards = false;
         lockHint.style.display = 'flex';
       }
+      gameChoice.addEventListener('click', () => { startSelect.style.display = 'none'; });
       playBottom.addEventListener('click', showCards);
       skipCards.addEventListener('pointerdown', (e) => e.stopPropagation());
       skipCards.addEventListener('click', (e) => {
