@@ -287,6 +287,109 @@
         const material = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, side: THREE.DoubleSide });
         return new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
       }
+
+      // ---------- 이스터에그: 비밀의 문과 개구리 방 ----------
+      const secretDoorBuilding = buildingBoxes[1 + Math.floor(Math.random() * (buildingBoxes.length - 1))];
+      const secretDoor = new THREE.Group();
+      const secretDoorPosition = new THREE.Vector3();
+      const doorWall = Math.floor(Math.random() * 4);
+      const doorNormal = new THREE.Vector3();
+      if (doorWall === 0) {
+        secretDoorPosition.set(secretDoorBuilding.maxX, 0, (secretDoorBuilding.minZ + secretDoorBuilding.maxZ) / 2);
+        doorNormal.set(1, 0, 0); secretDoor.rotation.y = Math.PI / 2;
+      } else if (doorWall === 1) {
+        secretDoorPosition.set(secretDoorBuilding.minX, 0, (secretDoorBuilding.minZ + secretDoorBuilding.maxZ) / 2);
+        doorNormal.set(-1, 0, 0); secretDoor.rotation.y = -Math.PI / 2;
+      } else if (doorWall === 2) {
+        secretDoorPosition.set((secretDoorBuilding.minX + secretDoorBuilding.maxX) / 2, 0, secretDoorBuilding.maxZ);
+        doorNormal.set(0, 0, 1);
+      } else {
+        secretDoorPosition.set((secretDoorBuilding.minX + secretDoorBuilding.maxX) / 2, 0, secretDoorBuilding.minZ);
+        doorNormal.set(0, 0, -1); secretDoor.rotation.y = Math.PI;
+      }
+      secretDoorPosition.addScaledVector(doorNormal, 0.12);
+      secretDoor.position.copy(secretDoorPosition);
+      const doorFrameMat = new THREE.MeshStandardMaterial({ color: 0x4a2a16, roughness: 0.82 });
+      const doorMat = new THREE.MeshStandardMaterial({ color: 0x8d5428, roughness: 0.7 });
+      const doorPanel = new THREE.Mesh(new THREE.BoxGeometry(2.35, 3.9, 0.14), doorMat);
+      doorPanel.position.y = 1.95;
+      const frameLeft = new THREE.Mesh(new THREE.BoxGeometry(0.22, 4.25, 0.26), doorFrameMat);
+      frameLeft.position.set(-1.27, 2.08, 0.04);
+      const frameRight = frameLeft.clone(); frameRight.position.x = 1.27;
+      const frameTop = new THREE.Mesh(new THREE.BoxGeometry(2.75, 0.22, 0.26), doorFrameMat);
+      frameTop.position.set(0, 4.13, 0.04);
+      const doorKnob = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), new THREE.MeshStandardMaterial({ color: 0xf3ce58, metalness: 0.55 }));
+      doorKnob.position.set(0.78, 1.92, 0.13);
+      const doorLabel = makeTextSprite('비밀의 문', '#fff3a0');
+      doorLabel.position.set(0, 5.1, 0.05);
+      secretDoor.add(doorPanel, frameLeft, frameRight, frameTop, doorKnob, doorLabel);
+      secretDoor.traverse(o => { if (o.isMesh) o.castShadow = true; });
+      scene.add(secretDoor);
+
+      const SECRET_ROOM_Z = 1350;
+      const secretEntrance = new THREE.Vector3(0, 0, SECRET_ROOM_Z - 11);
+      const secretRoom = new THREE.Group();
+      secretRoom.position.z = SECRET_ROOM_Z;
+      const secretFloorMat = new THREE.MeshStandardMaterial({ color: 0x345b42, roughness: 0.88 });
+      const secretWallMat = new THREE.MeshStandardMaterial({ color: 0x1b3933, roughness: 0.9 });
+      const secretFloor = new THREE.Mesh(new THREE.PlaneGeometry(32, 32), secretFloorMat);
+      secretFloor.rotation.x = -Math.PI / 2;
+      secretRoom.add(secretFloor);
+      const addSecretWall = (x, z, w, d) => {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 12, d), secretWallMat);
+        wall.position.set(x, 6, z);
+        wall.receiveShadow = true;
+        secretRoom.add(wall);
+      };
+      addSecretWall(0, -16, 32, 0.55);
+      addSecretWall(0, 16, 32, 0.55);
+      addSecretWall(-16, 0, 0.55, 32);
+      addSecretWall(16, 0, 0.55, 32);
+      const secretCeiling = new THREE.Mesh(new THREE.PlaneGeometry(32, 32), secretWallMat);
+      secretCeiling.rotation.x = Math.PI / 2;
+      secretCeiling.position.y = 12;
+      secretRoom.add(secretCeiling);
+      const secretLight = new THREE.PointLight(0xb7ff8c, 1.7, 38);
+      secretLight.position.set(0, 9, 0);
+      secretRoom.add(secretLight);
+
+      const tinyFrogBody = new THREE.SphereGeometry(0.42, 10, 8);
+      const tinyFrogHead = new THREE.SphereGeometry(0.5, 10, 8);
+      const tinyFrogEye = new THREE.SphereGeometry(0.11, 8, 6);
+      const tinyFrogMat = new THREE.MeshStandardMaterial({ color: 0x5caa3b, roughness: 0.72 });
+      const tinyFrogBellyMat = new THREE.MeshStandardMaterial({ color: 0xd8e793, roughness: 0.84 });
+      const tinyFrogEyeMat = new THREE.MeshStandardMaterial({ color: 0x101010 });
+      const addTinyFrog = (x, z, scale) => {
+        const frog = new THREE.Group();
+        const body = new THREE.Mesh(tinyFrogBody, tinyFrogMat);
+        body.scale.set(1, 0.8, 0.9); body.position.y = 0.42;
+        const belly = new THREE.Mesh(tinyFrogBody, tinyFrogBellyMat);
+        belly.scale.set(0.65, 0.28, 0.55); belly.position.set(0, 0.4, 0.37);
+        const head = new THREE.Mesh(tinyFrogHead, tinyFrogMat);
+        head.scale.set(1, 0.78, 0.82); head.position.y = 0.92;
+        const eyeLeft = new THREE.Mesh(tinyFrogEye, tinyFrogEyeMat);
+        eyeLeft.position.set(-0.21, 1.15, 0.34);
+        const eyeRight = eyeLeft.clone(); eyeRight.position.x = 0.21;
+        frog.add(body, belly, head, eyeLeft, eyeRight);
+        frog.position.set(x, 0, z);
+        frog.rotation.y = Math.random() * Math.PI * 2;
+        frog.scale.setScalar(scale);
+        secretRoom.add(frog);
+      };
+      for (let x = -13; x <= 13; x += 2.15) {
+        for (let z = -10; z <= 13; z += 2.05) {
+          if (Math.abs(x) < 3.2 && z < -5) continue;
+          addTinyFrog(x + (Math.random() - 0.5) * 0.55, z + (Math.random() - 0.5) * 0.55, 0.72 + Math.random() * 0.42);
+        }
+      }
+      const secretSignBoard = new THREE.Mesh(new THREE.BoxGeometry(19, 5.8, 0.32), new THREE.MeshStandardMaterial({ color: 0x754222, roughness: 0.86 }));
+      secretSignBoard.position.set(0, 6.1, 14.95);
+      const secretSign = makeSignTextPlane('405호실의 이양호에게\n본인이 이스터에그를 찾았다고\n알려주세요', 17.4, 4.7);
+      secretSign.position.set(0, 6.1, 14.74);
+      secretSign.rotation.y = Math.PI;
+      secretRoom.add(secretSignBoard, secretSign);
+      scene.add(secretRoom);
+
       const foodBowl = new THREE.Group();
       const bowlOuter = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 1.65, 1.25, 24), new THREE.MeshStandardMaterial({ color: 0x8a4d20, roughness: 0.72 }));
       bowlOuter.position.y = 0.62;
@@ -623,6 +726,7 @@
       let carriedFly = null;
       let fliesDelivered = 0;
       let toastTimer = 0;
+      let secretActive = false;
       const velocity = new THREE.Vector3();
 
       const GRAVITY = 28;
@@ -950,6 +1054,22 @@
         addMilestoneSign(fliesDelivered);
         showGoalToast(fliesDelivered === 5 ? '양호밥 완성!' : `파리 ${fliesDelivered}마리 배달!`);
       }
+      function checkSecretDoor() {
+        if (secretActive || carHit || character.position.y > 4) return;
+        const dx = character.position.x - secretDoorPosition.x;
+        const dz = character.position.z - secretDoorPosition.z;
+        if (dx * dx + dz * dz > 3.2) return;
+
+        secretActive = true;
+        if (carriedFly) dropCarriedFly();
+        releaseHook();
+        character.position.copy(secretEntrance);
+        character.rotation.set(0, 0, 0);
+        velocity.set(0, 0, 0);
+        grounded = true;
+        secretDoor.visible = false;
+        showGoalToast('비밀의 개구리 방을 찾았습니다!');
+      }
       function updateGoal(dt) {
         if (!carHit && !carriedFly) {
           for (const state of flies) {
@@ -1183,7 +1303,7 @@
         }
 
         character.position.x = Math.max(-400, Math.min(400, character.position.x));
-        character.position.z = Math.max(-300, Math.min(1000, character.position.z));
+        character.position.z = Math.max(-300, Math.min(1500, character.position.z));
       }
 
       function updateCamera() {
@@ -1287,6 +1407,7 @@
 
         updateFiring(dt);
         updateMovement(dt);
+        checkSecretDoor();
         updateCars(dt);
         updateFlies(dt);
         updateGoal(dt);
